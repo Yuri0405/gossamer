@@ -856,13 +856,12 @@ func TestValidationFailDoesNotStopSubsystem(t *testing.T) {
 	require.Len(t, backableCandidates, 0)
 }
 
-// TODO: modify this test to ensure that a validator can second multiple candidates per relay parent,
-// as we remove all the code for prospective parachain mode disabled.
-//
-// It's impossible to second multiple candidates per relay parent without prospective parachains.
-func TestCanNotSecondMultipleCandidatesPerRelayParent(t *testing.T) {
-	t.Skip("This test is not valid anymore as we want to remove all the code for prospective parachain mode disabled")
+// Test that a validator can second multiple candidates per relay parent.
+// This verifies the new behavior where validators can approve multiple competing
+// candidates for the same relay parent.
+func TestCanSecondMultipleCandidatesPerRelayParent(t *testing.T) {
 
+	//t.Skip("Test updated for new behavior, but backing subsystem code needs to be updated to allow multiple candidates per relay parent")
 	candidateBacking, mockBlockState, mockOverseer := initBackingAndOverseerMock(t)
 	defer stopOverseerAndWaitForCompletion(mockOverseer)
 
@@ -987,15 +986,30 @@ func TestCanNotSecondMultipleCandidatesPerRelayParent(t *testing.T) {
 		validationCode2,
 	)
 
-	// Validate the candidate, but the candidate is rejected because the leaf is already occupied.
-	// should not expect `StatementDistributionMessageShare` and `collator protocol messages.Seconded` overseer messages.
-	mockOverseer.ExpectActions(validate, storeAvailableData)
+	distribute2 := func(msg any) bool {
+		share, ok := msg.(statementedistributionmessages.Share)
+		if !ok {
+			return false
+		}
+
+		statement, err := share.SignedFullStatementWithPVD.SignedFullStatement.Payload.Value()
+		require.NoError(t, err)
+
+		require.Equal(t, statement, parachaintypes.Seconded(candidate2))
+		require.Equal(t, *share.SignedFullStatementWithPVD.PersistedValidationData, pvd)
+		require.Equal(t, share.RelayParent, relayParent)
+
+		return true
+	}
+
+	// Both candidates should be successfully seconded for the same relay parent.
+	mockOverseer.ExpectActions(validate, storeAvailableData, introduceCandidate, distribute2, informSeconded)
 
 	// mocked for candidate2
 	mockRuntime.EXPECT().ParachainHostValidationCodeByHash(gomock.AssignableToTypeOf(common.Hash{})).
 		Return(&validationCode2, nil)
 
-	// Try to second candidate with the same relay parent again.
+	// Second another candidate with the same relay parent - this should now succeed.
 	mockOverseer.ReceiveMessage(backing.SecondMessage{
 		RelayParent:             relayParent,
 		CandidateReceipt:        candidate2.ToPlain(),
@@ -1003,7 +1017,7 @@ func TestCanNotSecondMultipleCandidatesPerRelayParent(t *testing.T) {
 		PoV:                     pov,
 	})
 
-	time.Sleep(10 * time.Minute)
+	time.Sleep(2 * time.Second)
 }
 
 // The new leaf view doesn't clobber the old view when we update active leaves.
